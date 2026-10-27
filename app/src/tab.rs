@@ -19,8 +19,10 @@ use warpui::elements::{
     PositionedElementOffsetBounds, Radius, Rect, SavePosition, Shrinkable, SizeConstraintCondition,
     SizeConstraintSwitch, Stack, Text,
 };
+use warpui::event::ModifiersState;
 use warpui::fonts::Weight;
 use warpui::keymap::Keystroke;
+use warpui::platform::OperatingSystem;
 use warpui::platform::keyboard::KeyCode;
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
@@ -89,6 +91,16 @@ pub(crate) fn tab_activate_binding_name(
         return Some(binding_name);
     }
     (tab_index == tab_count - 1).then_some(TAB_ACTIVATE_LAST_BINDING_NAME)
+}
+
+/// Whether a click with these modifiers toggles a tab in the multi-selection: Cmd on macOS, Ctrl
+/// elsewhere, where the Super key belongs to the OS.
+pub(crate) fn toggles_tab_selection(modifiers: &ModifiersState) -> bool {
+    if OperatingSystem::get().is_mac() {
+        modifiers.cmd
+    } else {
+        modifiers.ctrl
+    }
 }
 
 /// Modifier kinds relevant to revealing tab shortcut hints. The Super kind is
@@ -495,8 +507,14 @@ impl TabData {
         };
         let appearance = Appearance::as_ref(ctx);
         let terminal_colors = appearance.theme().terminal_colors().normal;
+        // Vertical tabs put their own "Pin" first (`Workspace::add_sidebar_pin_menu_item`).
+        let pin_items = if uses_vertical_tabs(ctx) {
+            Vec::new()
+        } else {
+            self.pin_menu_items(index)
+        };
         join_menu_sections([
-            self.pin_menu_items(index),
+            pin_items,
             self.unread_menu_items(ctx),
             group_items,
             self.session_sharing_menu_items(index, ctx),
@@ -531,7 +549,10 @@ impl TabData {
             menu_items.push(MenuItem::Separator);
             menu_items.push(
                 MenuItemFields::new("Close tab")
-                    .with_key_shortcut_label(Some("⌘W"))
+                    .with_key_shortcut_label(keybinding_name_to_display_string(
+                        "workspace:close_active_tab",
+                        ctx,
+                    ))
                     .with_on_select_action(WorkspaceAction::CloseTab(index))
                     .into_item(),
             );
@@ -2433,7 +2454,8 @@ impl UiComponent for TabComponent<'_> {
                 }
                 if modifiers.shift && FeatureFlag::GroupedTabs.is_enabled() {
                     ctx.dispatch_typed_action(WorkspaceAction::ShiftSelectTabRange { locator });
-                } else if modifiers.cmd && FeatureFlag::GroupedTabs.is_enabled() {
+                } else if toggles_tab_selection(&modifiers) && FeatureFlag::GroupedTabs.is_enabled()
+                {
                     ctx.dispatch_typed_action(WorkspaceAction::ToggleTabMultiSelection { locator });
                 } else {
                     ctx.dispatch_typed_action(WorkspaceAction::ActivateTab(tab_index));

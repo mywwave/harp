@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE-AGPL"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
-  <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
+  <img alt="Platform: macOS, Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey">
 </p>
 
 Harp is an unofficial fork of the open-source [Warp](https://github.com/warpdotdev/warp) terminal.
@@ -52,9 +52,10 @@ Warp as it is.
     </td>
     <td width="50%" valign="top">
       <h3>Limit rings</h3>
-      <p>Two rings per provider in the footer: the 5 hour window and the weekly limit. Harp reads
-      the numbers from a local JSON file that a tool of your choice keeps current
-      (<a href="docs/limit-rings.md">format</a>); it never fetches them itself.</p>
+      <p>Two rings per provider in the footer: the 5 hour window and the weekly limit. Hover one
+      for the numbers and reset times. Codex's come from its own session logs, Claude's from
+      Claude Code's status line (see <a href="#limit-rings">below</a>). Harp fetches nothing and
+      reads no credentials.</p>
       <h3>Phone-friendly tmux</h3>
       <p>Tabs attached to tmux follow their session: name, group, read and inactive flags.
       A session started elsewhere, for example from your phone over ssh, can ask for a tab
@@ -73,6 +74,12 @@ own. Logging in through Harp is untested.
 Harp into Applications. Harp has its own bundle id (`com.dominikmartn.Harp`), URL scheme (`harp://`)
 and settings folder (`~/.harp`), so it runs next to Warp without sharing anything.
 
+**Updates:** Harp checks the latest GitHub release every 10 minutes, the same way Warp checks its
+own server. When the release's version is newer than `version` in `app/Cargo.toml` of the running
+build, Harp downloads its DMG in the background, checks that it is signed by Harp's Developer ID
+team, and offers to restart into it. To try this on an installed build, launch it with an older
+version: `open --env HARP_UPDATE_PRETEND_VERSION=0.0.1 /Applications/Harp.app`.
+
 **Build from source** (macOS, Rust toolchain from `rust-toolchain.toml`):
 
 ```sh
@@ -84,10 +91,77 @@ and settings folder (`~/.harp`), so it runs next to Warp without sharing anythin
 back to an ad-hoc signature. A signed, notarizable release DMG comes from `script/release_macos`
 (see `--help`).
 
+### Windows
+
+Harp runs on Windows 10 and 11 as a build from source or an installer you build yourself. The glass
+sidebar needs Windows 11 22H2; older versions get a solid sidebar.
+
+```powershell
+.\script\windows\bootstrap.ps1   # one-time: toolchain, build tools, protoc
+$env:CARGO_BIN_NAME = 'oss'; $env:WARP_APP_NAME = 'Harp'   # Harp's icon and name in the exe
+cargo run --bin warp-oss
+```
+
+`.\script\windows\bundle.ps1 -CHANNEL oss` builds the installer with
+[Inno Setup 6](https://jrsoftware.org/isdl.php) into `script\windows\Output`. Settings live in
+`%LOCALAPPDATA%\dominikmartn\Harp\config\settings.toml`. Start Harp from a normal terminal, not from
+inside another agent session: it hands its environment (for example `NO_COLOR`) to the shells it opens.
+
+**What works.** The framed sidebar with groups, status rings and the usage footer, the working rings around
+the window, and window controls and drag.
+The sidebar learns what Claude Code is doing from the official Warp plugin, which needs
+[jq](https://jqlang.org) (`winget install jqlang.jq`) and runs its scripts with Git Bash.
+
+**What differs from macOS**
+
+| | macOS | Windows |
+| --- | --- | --- |
+| Rename a tab | Ctrl+R | Ctrl+Alt+R (Ctrl+R belongs to the shell) |
+| Add a tab to the selection | Cmd+click | Ctrl+click |
+| tmux integration | tmux | [psmux](https://github.com/psmux/psmux), a tmux for Windows |
+| Self-update | from GitHub releases | not available; build or install a new version |
+| Release package | signed, notarized DMG | unsigned installer |
+
+**tmux on Windows.** The tmux integration (groups, order, names and flags kept on the sessions, and
+adopting sessions marked with `@warp_adopt`) works with psmux. Install it with
+`winget install marlocarlo.psmux`, which also puts a `tmux.exe` alias in
+`%LOCALAPPDATA%\Microsoft\WinGet\Links`, where Harp looks for it. Then turn the integration on in the
+settings file and restart Harp:
+
+```toml
+[integrations.tmux]
+enabled = true
+```
+
+Sessions created with `tmux new-session -d` and then marked with
+`tmux set-option -t <name> @warp_group <group>` and `@warp_adopt 1` open as grouped tabs:
+
+<img src="images/windows-tmux.webp" width="100%" alt="Harp on Windows with tmux sessions from psmux grouped into Launch, iOS app, Backend and Other, a Claude Code session open and the usage limits in the sidebar footer">
+
+Tmux inside WSL is not wired up: Harp talks to the Windows `tmux.exe` only.
+
 ## Settings
 
-The extras are off by default. Turn them on in `~/.harp/settings.toml`; the app reloads the file
-when it changes.
+### Limit rings
+
+The rings are on by default and show the agents you use:
+
+- **Codex:** read from the `rate_limits` Codex logs into `~/.codex/sessions` (or `$CODEX_HOME`).
+  They appear once Codex has answered at least once.
+- **Claude Code:** Claude Code hands its plan limits only to its status line. On first start, if
+  `~/.claude/settings.json` has no `statusLine` yet, Harp adds one that saves the status line's
+  input to `~/.harp/claude-statusline.json` and prints nothing. A status line you already have is
+  left alone; to keep yours and get the rings, save the input first, for example
+  `"command": "tee ~/.harp/claude-statusline.json | your-command"`. The rings appear after Claude
+  Code's next answer, for Claude.ai plans (not API keys).
+
+More providers can come from a JSON file another tool keeps current
+([format](docs/limit-rings.md)); its entries replace Harp's own readings of the same name.
+
+### Other extras
+
+The other extras are off by default. Turn them on in `~/.harp/settings.toml`; the app reloads the
+file when it changes.
 
 ```toml
 [integrations.limit_rings]
@@ -100,8 +174,8 @@ enabled = true
 
 | Setting | Default | Effect |
 |---|---|---|
-| `integrations.limit_rings.enabled` | `false` | Shows the limit rings in the sidebar footer. |
-| `integrations.limit_rings.file` | `""` | JSON file the rings read; `~` is your home folder. |
+| `integrations.limit_rings.enabled` | `true` | Shows the limit rings in the sidebar footer. |
+| `integrations.limit_rings.file` | `""` | Optional JSON file with more providers; `~` is your home folder. |
 | `integrations.tmux.enabled` | `false` | Tmux sync (names, groups, order, flags, adopting sessions) and agent detection inside tmux. Polls every 10 s. |
 | `integrations.tmux.session_script` | `""` | Optional script that renames and regroups instead of the built-in tmux commands: `<script> rename <shell_pid> <group> <title>`, `<script> group <session_id> <old_group> <new_group>`. |
 | `appearance.vertical_tabs.full_tab_menu` | `true` | `false` shrinks the tab and group menus to the essentials. Also in Settings > Appearance > Tabs. |
@@ -118,7 +192,7 @@ sidebar layout (new tabs come from Cmd+T, a double-click or the right-click menu
 space), the sidebar divider option and the title-strip panel toggles.
 
 **Development switches** (environment, at launch): `WARPOSS_STATUS_TRACE=1` logs every change of a
-row's shown status to `~/Library/Logs/harp.log` as a `[status-check]` line, for regression checks
+row's shown status to `~/Library/Logs/harp.log` (Windows: `%LOCALAPPDATA%\dominikmartn\Harp\data\logs\harp.log`) as a `[status-check]` line, for regression checks
 against an agent's transcript. `WARPOSS_SKIP_LOGIN=1` starts with a test user and fails every
 authenticated request, for automated runs without a login. `WARP_DATA_PROFILE=<name>` (debug
 builds) keeps settings and data in `~/.harp-<name>`.

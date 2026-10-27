@@ -580,6 +580,8 @@ const FRAMED_CARD_CORNER_RADIUS: f32 = 10.;
 /// Titlebar height in the framed layout: the traffic lights center 28 px from the top, level with
 /// the sidebar's header buttons and the card header (the button constraint adds 1 px).
 const FRAMED_TITLEBAR_HEIGHT: f32 = 54.;
+/// The gap between the framed layout's card and the window edge (top, right and bottom).
+const FRAMED_CARD_INSET: f32 = 8.;
 /// Card padding left of the terminal under the card header, so tmux text (which brings no inset
 /// of its own) starts 32 px in, under the header's name.
 const FRAMED_CARD_CONTENT_LEFT_PADDING: f32 = 32.;
@@ -602,7 +604,7 @@ const TAB_BAR_PILL_WIDTH: f32 = 100.;
 const PILL_FONT_SIZE: f32 = 12.;
 // We use the word "Warp" in the Update Ready button to make it obvious that the terminal is Warp.
 // This can lead to free advertising when users screen-share Warp when an update is available.
-const UPDATE_READY_TEXT: &str = "Update Warp";
+const UPDATE_READY_TEXT: &str = "Update Harp";
 
 const TAB_BAR_OVERFLOW_MENU_WIDTH: f32 = 300.;
 
@@ -1225,6 +1227,8 @@ pub struct Workspace {
     /// Per tab: inactive and marked-unread as last agreed with its tmux session
     /// (@warp_inactive, @warp_unread), and when the app last wrote them there.
     tmux_tab_flags: HashMap<EntityId, tab_grouping::TmuxTabFlags>,
+    /// Per tab with a tmux session: its pin to the sidebar's "Pinned" section (@warp_pin).
+    tmux_tab_pins: HashMap<EntityId, tab_grouping::TmuxTabPin>,
     /// Per tab: the folder of its tmux session's active pane, for the card header.
     tmux_tab_paths: HashMap<EntityId, String>,
     /// While a sidebar row is dragged: where it would land. Applied on drop.
@@ -3667,6 +3671,7 @@ impl Workspace {
             tmux_tab_groups: HashMap::new(),
             tmux_tab_session_names: HashMap::new(),
             tmux_tab_flags: HashMap::new(),
+            tmux_tab_pins: HashMap::new(),
             tmux_tab_paths: HashMap::new(),
             sidebar_drop_target: None,
             is_group_being_dragged: false,
@@ -8332,7 +8337,7 @@ impl Workspace {
         let can_move_left = self.can_move_tab(tab_index, TabMovement::Left);
         let can_move_right = self.can_move_tab(tab_index, TabMovement::Right);
         let is_only_member_of_group = self.tab_is_only_member_of_its_group(tab_index);
-        let menu_items = {
+        let mut menu_items = {
             let tab = &self.tabs[tab_index];
             tab.menu_items(
                 tab_index,
@@ -8344,6 +8349,7 @@ impl Workspace {
                 ctx,
             )
         };
+        self.add_sidebar_pin_menu_item(tab_index, &mut menu_items, ctx);
         ctx.update_view(&self.tab_right_click_menu, |context_menu, view_ctx| {
             context_menu.set_items(menu_items, view_ctx);
         });
@@ -8431,7 +8437,7 @@ impl Workspace {
         let can_move_right = self.can_move_tab(tab_index, TabMovement::Right);
         let is_only_member_of_group = self.tab_is_only_member_of_its_group(tab_index);
         let tab = &self.tabs[tab_index];
-        let menu_items = tab.menu_items_with_pane_name_target(
+        let mut menu_items = tab.menu_items_with_pane_name_target(
             tab_index,
             self.tabs.len(),
             &self.tab_groups,
@@ -8441,6 +8447,7 @@ impl Workspace {
             Some(pane_name_target),
             ctx,
         );
+        self.add_sidebar_pin_menu_item(tab_index, &mut menu_items, ctx);
 
         let sidebar_style = self
             .uses_framed_sidebar_layout(ctx)
@@ -8468,7 +8475,7 @@ impl Workspace {
         let mut menu_items = vec![];
         if FeatureFlag::Autoupdate.is_enabled()
             && ChannelState::show_autoupdate_menu_items()
-            && let Some(version) = ChannelState::app_version()
+            && let Some(version) = autoupdate::current_version()
         {
             menu_items.push(
                 MenuItemFields::new(format!("Current version is {version}"))
@@ -8488,7 +8495,7 @@ impl Workspace {
                         .into_item(),
                 ),
                 AutoupdateStage::UnableToUpdateToNewVersion { .. } => menu_items.push(
-                    MenuItemFields::new("Update Warp manually")
+                    MenuItemFields::new("Update Harp manually")
                         .with_on_select_action(WorkspaceAction::DownloadNewVersion)
                         .into_item(),
                 ),
@@ -10255,7 +10262,7 @@ impl Workspace {
                     ) =>
                 {
                     items.push(
-                        MenuItemFields::new("Update and relaunch Warp")
+                        MenuItemFields::new("Update and relaunch Harp")
                             .with_on_select_action(WorkspaceAction::ApplyUpdate)
                             .with_override_text_color(appearance.theme().ansi_fg_red())
                             .into_item(),
@@ -10278,7 +10285,7 @@ impl Workspace {
                     ) =>
                 {
                     items.push(
-                        MenuItemFields::new("Update Warp manually")
+                        MenuItemFields::new("Update Harp manually")
                             .with_on_select_action(WorkspaceAction::DownloadNewVersion)
                             .with_override_text_color(appearance.theme().ansi_fg_red())
                             .into_item(),
@@ -22237,9 +22244,9 @@ impl Workspace {
     /// previous card) and lets its margin drag the window.
     fn inset_framed_card(card: Container) -> Box<dyn Element> {
         EventHandler::new(
-            card.with_margin_top(8.)
-                .with_margin_right(8.)
-                .with_margin_bottom(8.)
+            card.with_margin_top(FRAMED_CARD_INSET)
+                .with_margin_right(FRAMED_CARD_INSET)
+                .with_margin_bottom(FRAMED_CARD_INSET)
                 .finish(),
         )
         .on_left_mouse_down(|ctx, _, _| {
@@ -22281,7 +22288,22 @@ impl Workspace {
                 ))
                 .finish()
         });
-        let header = sidebar::card_header(sidebar::card_info(self, ctx), buttons, ctx);
+        let zoom_factor = WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor();
+        let controls = traffic_light_data(ctx, self.window_id)
+            .map(|data| (data.side, data.width(zoom_factor)));
+        // The header is the card's title bar: dragging it moves the window, and a double click
+        // maximizes it. The buttons inside take their own clicks first.
+        let header = EventHandler::new(sidebar::card_header(
+            sidebar::card_info(self, ctx),
+            buttons,
+            controls,
+            ctx,
+        ))
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.request_window_drag();
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
         let card =
             self.render_framed_card_surface_with_header(content, Some(header), appearance, ctx);
         // While the sidebar is still rendered (open or sliding out) its reveal carries this gap.
@@ -22382,15 +22404,32 @@ impl Workspace {
             .platform_window(self.window_id)
             .map(|window| window.fullscreen_state())
             .unwrap_or_default();
+        let controls = traffic_light_data.render(
+            fullscreen_state,
+            &self.traffic_light_mouse_states,
+            appearance.theme(),
+            app,
+        );
+        // In the framed layout the buttons belong to the card's header: inside the card's margins
+        // and centered on the header's height.
+        let (controls, offset) = if self.uses_framed_sidebar_layout(app) {
+            let centered = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(controls)
+                .finish();
+            (
+                ConstrainedBox::new(centered)
+                    .with_height(vertical_tabs::sidebar::CARD_HEADER_HEIGHT)
+                    .finish(),
+                Vector2F::new(-FRAMED_CARD_INSET, FRAMED_CARD_INSET),
+            )
+        } else {
+            (controls, Vector2F::zero())
+        };
         stack.add_positioned_child(
-            traffic_light_data.render(
-                fullscreen_state,
-                &self.traffic_light_mouse_states,
-                appearance.theme(),
-                app,
-            ),
+            controls,
             OffsetPositioning::offset_from_parent(
-                Vector2F::zero(),
+                offset,
                 ParentOffsetBounds::WindowByPosition,
                 ParentAnchor::TopRight,
                 ChildAnchor::TopRight,
@@ -23134,7 +23173,7 @@ impl Workspace {
                         description,
                         secondary_button: None,
                         button: Some(WorkspaceBannerButtonDetails {
-                            text: "Update Warp manually".to_string(),
+                            text: "Update Harp manually".to_string(),
                             action: WorkspaceAction::DownloadNewVersion,
                             variant: BannerButtonVariant::Outlined,
                             icon: None,
@@ -23159,7 +23198,7 @@ impl Workspace {
                         description,
                         secondary_button: None,
                         button: Some(WorkspaceBannerButtonDetails {
-                            text: "Update Warp manually".to_string(),
+                            text: "Update Harp manually".to_string(),
                             action: WorkspaceAction::DownloadNewVersion,
                             variant: BannerButtonVariant::Outlined,
                             icon: None,
@@ -24979,6 +25018,10 @@ impl Workspace {
                 }
                 ctx.notify();
             }
+            SetTabPinnedInSidebar {
+                pane_group_id,
+                pinned,
+            } => self.set_tab_pinned_in_sidebar(*pane_group_id, *pinned, ctx),
             ToggleOtherSectionCollapsed => {
                 self.vertical_tabs_panel.other_section_collapsed =
                     !self.vertical_tabs_panel.other_section_collapsed;
@@ -27670,6 +27713,10 @@ impl View for Workspace {
                 .finish()
         } else {
             let framed = self.uses_framed_sidebar_layout(app);
+            let glass = app
+                .windows()
+                .platform_window(self.window_id)
+                .is_some_and(|window| window.supports_sidebar_glass());
             if framed {
                 vertical_tabs::sidebar::colors::sync(app);
                 // The glass takes its light or dark material from the same switch the palette
@@ -27697,7 +27744,7 @@ impl View for Workspace {
                 // The sidebar's surface spans the whole window so the gaps around the card read
                 // as sidebar.
                 Container::new(outer)
-                    .with_background_color(vertical_tabs::sidebar::sidebar_fill())
+                    .with_background_color(vertical_tabs::sidebar::sidebar_fill(glass))
                     .finish()
             } else {
                 Container::new(outer)
@@ -28832,16 +28879,34 @@ impl View for Workspace {
                         -WORKSPACE_PADDING,
                     )
                 };
-                stack.add_positioned_overlay_child(
-                    ChildView::new(stack_view).finish(),
+                // The framed layout has no tab bar to hang the toasts from: they hang from the
+                // window's top edge, below the card's header.
+                let positioning = if self.uses_framed_sidebar_layout(app) {
+                    let (parent_anchor, child_anchor) = if mailbox_on_left {
+                        (ParentAnchor::TopLeft, ChildAnchor::TopLeft)
+                    } else {
+                        (ParentAnchor::TopRight, ChildAnchor::TopRight)
+                    };
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(
+                            offset_x,
+                            FRAMED_CARD_INSET + vertical_tabs::sidebar::CARD_HEADER_HEIGHT + 4.,
+                        ),
+                        ParentOffsetBounds::WindowByPosition,
+                        parent_anchor,
+                        child_anchor,
+                    )
+                } else {
                     OffsetPositioning::offset_from_save_position_element(
                         TAB_BAR_POSITION_ID,
                         vec2f(offset_x, 4.),
                         PositionedElementOffsetBounds::WindowByPosition,
                         anchor,
                         child_anchor,
-                    ),
-                );
+                    )
+                };
+                stack
+                    .add_positioned_overlay_child(ChildView::new(stack_view).finish(), positioning);
             }
         } else if !self.current_workspace_state.is_agent_management_popup_open {
             stack.add_positioned_overlay_child(
@@ -30100,7 +30165,15 @@ impl Workspace {
                 group: section,
             });
         }
+        // "Pinned" takes no drops; its rows stand above every section, out of the tab order.
+        let on_pinned = ctx
+            .element_position_by_id(vertical_tabs::PINNED_SECTION_POSITION_ID)
+            .is_some_and(|rect| (rect.min_y()..=rect.max_y()).contains(&y));
+        if on_pinned {
+            return None;
+        }
         let mut rows: Vec<(usize, RectF)> = (0..self.tabs.len())
+            .filter(|&index| self.sidebar_pin(&self.tabs[index]).is_none())
             .filter_map(|index| {
                 ctx.element_position_by_id(tab_position_id(index))
                     .map(|rect| (index, rect))
